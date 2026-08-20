@@ -1,7 +1,7 @@
 # touch_windows
 Touchscreen repair and update automation for HP / Lenovo / Dell notebooks.
 
-1. Download the file and save it to your **Desktop**. -> https://raw.githubusercontent.com/screenologist/touch_windows/main/TouchFix.ps1
+1. Download the file and save it to your **Desktop** (Right-click > Save link as) -> https://raw.githubusercontent.com/screenologist/touch_windows/main/TouchFix.ps1
 2. Open PowerShell (Press the **Windows key**, type: powershell )
 3. Right-click **Windows PowerShell** in the results and choose **Run as administrator**. Click **Yes** when Windows asks for permission.
 4. A blue window opens. Type this and press **Enter**:
@@ -19,11 +19,11 @@ Wait about 30 seconds. When it finishes, a report is saved to your Desktop.
 
 recommended -> reinstall drivers, OS, firmware
 ```
-     powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Full
-```
-or only drivers
-```
      powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Repair
+```
+or reinstall drivers, OS, firmware
+```
+     powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Full
 ```
 This reinstalls the touchscreen driver. It takes about a minute.
 
@@ -60,7 +60,7 @@ sitting where an OEM driver should be.
 **Stage 2 — Repair driver stack**
 Starts `hidserv` and `TabletInputService` if stopped, enables any disabled touch
 device, then `pnputil /remove-device` on the HID touch device followed by
-`pnputil /scan-devices`. This is the fix your customer performed manually.
+`pnputil /scan-devices`. 
 
 **Stage 3 — Vendor drivers and firmware**
 
@@ -126,7 +126,7 @@ script will install.
 
 ## Deployment
 
-**Bench use:** drop both files on the tech's desktop.
+**Bench use:** drop file on the tech's desktop.
 
 **Customer self-service:** ship `-Mode Repair` only. It's the highest-yield,
 lowest-risk stage and needs no vendor tooling. Wrap it in a `.cmd` like the
