@@ -9,8 +9,8 @@
     Runs in stages, cheapest and safest first:
 
       STAGE 1  Diagnose        - read-only inventory of the touch stack
+                                 and the display panel (EDID)
       STAGE 2  Repair driver   - remove + re-enumerate the touch device
-                                 (this is the fix that worked for your customer)
       STAGE 3  Vendor updates  - drivers + firmware via the OEM's own engine
       STAGE 4  Windows Update  - scan, download, install quality updates
       STAGE 5  BIOS            - compare installed vs latest, flash if asked
@@ -55,7 +55,9 @@
 .NOTES
     Requires administrator rights (will self-elevate).
     Requires internet access for stages 3, 4 and 5.
-    Tested targets: HP, Lenovo, Dell notebooks running Windows 10 / 11.
+    Targets: HP, Lenovo, Dell notebooks running Windows 10 / 11.
+
+    MIT Licensed. Provided as is, without warranty of any kind.
 #>
 
 [CmdletBinding()]
@@ -170,6 +172,79 @@ $power = Get-PowerState
 Log "Power         : $(if ($power.OnAC) {'AC connected'} else {'ON BATTERY'}) - $($power.Percent)%"
 
 # =====================================================================
+#  DISPLAY PANEL / EDID INSPECTION
+#
+#  Reads the panel's EDID via WMI. On a laptop this identifies the actual
+#  LCD assembly - manufacturer, model, build week - which is what you need
+#  to tell whether panel failures cluster on one supplier or one batch.
+# =====================================================================
+function Get-PanelInfo {
+
+    # EDID strings arrive as null-terminated uint16 arrays
+    function ConvertFrom-EdidString($arr) {
+        if (-not $arr) { return '' }
+        (($arr | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) -join '').Trim()
+    }
+
+    # Three-letter PNP vendor IDs commonly seen on notebook panels
+    $panelVendors = @{
+        'AUO' = 'AU Optronics'; 'BOE' = 'BOE Technology'; 'CMN' = 'Chi Mei / Innolux'
+        'LGD' = 'LG Display';   'SHP' = 'Sharp';          'SDC' = 'Samsung Display'
+        'IVO' = 'InfoVision';   'CSO' = 'China Star';     'TMA' = 'Tianma'
+        'HKC' = 'HKC';          'PNL' = 'Generic panel'
+    }
+
+    $ids    = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -EA SilentlyContinue)
+    $params = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -EA SilentlyContinue)
+    $conn   = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -EA SilentlyContinue)
+
+    foreach ($m in $ids) {
+        $inst = $m.InstanceName
+        $p = $params | Where-Object { $_.InstanceName -eq $inst }
+        $c = $conn   | Where-Object { $_.InstanceName -eq $inst }
+
+        # VideoOutputTechnology: 11 = embedded DisplayPort, 0x80000000 = internal
+        $isInternal = $c -and ($c.VideoOutputTechnology -in 11, 2147483648)
+
+        $diagIn = if ($p -and $p.MaxHorizontalImageSize -gt 0) {
+            [math]::Round([math]::Sqrt(
+                [math]::Pow($p.MaxHorizontalImageSize,2) + [math]::Pow($p.MaxVerticalImageSize,2)
+            ) / 2.54, 1)
+        } else { 0 }
+
+        $mfgCode = ConvertFrom-EdidString $m.ManufacturerName
+        $model   = ConvertFrom-EdidString $m.UserFriendlyName
+        $psn     = ConvertFrom-EdidString $m.SerialNumberID
+        $pcode   = ConvertFrom-EdidString $m.ProductCodeID
+
+        # Detect placeholder / unprogrammed EDID, common on aftermarket panels
+        $suspect = (
+            $mfgCode -eq '' -or
+            $model   -eq '' -or
+            $model   -match '^(Unknown|Generic|LED MONITOR|LCD MONITOR)$' -or
+            $psn     -match '^(0|1010101|000000|123456)$' -or
+            $pcode   -match '^(0+|O+)$'
+        )
+
+        [pscustomobject]@{
+            IsInternal   = [bool]$isInternal
+            Type         = if ($isInternal) { 'INTERNAL (laptop panel)' } else { 'External monitor' }
+            VendorCode   = $mfgCode
+            VendorName   = if ($panelVendors.ContainsKey($mfgCode)) { $panelVendors[$mfgCode] } else { 'Unrecognised' }
+            Model        = $model
+            ProductCode  = $pcode
+            PanelSerial  = $psn
+            BuildWeek    = $m.WeekOfManufacture
+            BuildYear    = $m.YearOfManufacture
+            Built        = "Week $($m.WeekOfManufacture), $($m.YearOfManufacture)"
+            SizeInches   = $diagIn
+            SuspectEdid  = $suspect
+            InstanceName = $inst
+        }
+    }
+}
+
+# =====================================================================
 #  TOUCH STACK INSPECTION
 # =====================================================================
 function Get-TouchState {
@@ -222,10 +297,40 @@ function Test-TouchWorking {
 # =====================================================================
 Head 'STAGE 1 - DIAGNOSE'
 
+# --- 1a. Display panel ------------------------------------------------
+Log 'DISPLAY PANEL'
+$panels = @(Get-PanelInfo)
+if ($panels.Count -eq 0) {
+    Log '  Could not read EDID. Panel details unavailable.' 'Warn'
+} else {
+    foreach ($pn in $panels) {
+        Log ''
+        Log "  $($pn.Type)" $(if ($pn.IsInternal) {'Good'} else {'Info'})
+        Log "    Vendor code   : $($pn.VendorCode)  ($($pn.VendorName))"
+        Log "    Model         : $($pn.Model)"
+        Log "    Product code  : $($pn.ProductCode)"
+        Log "    Panel serial  : $($pn.PanelSerial)"
+        Log "    Built         : $($pn.Built)"
+        if ($pn.SizeInches -gt 0) { Log "    Size          : $($pn.SizeInches) inches" }
+
+        if ($pn.SuspectEdid -and $pn.IsInternal) {
+            Log ''
+            Log '    NOTE: this panel reports a generic or placeholder EDID.' 'Warn'
+            Log '    Factory panels normally report a real vendor code (AUO,' 'Warn'
+            Log '    BOE, CMN, LGD, SHP) and a model number. A blank or' 'Warn'
+            Log '    placeholder EDID is common on aftermarket replacements.' 'Warn'
+            Log '    Not a fault on its own - but worth recording.' 'Warn'
+        }
+    }
+}
+
+# --- 1b. Touch stack --------------------------------------------------
+Log ''
+Log 'TOUCH STACK'
 $state = Get-TouchState
-Log "Digitizer seen by Windows : $(if ($state.DigitizerPresent) {'YES'} else {'NO'})" $(if ($state.DigitizerPresent) {'Good'} else {'Bad'})
-Log "Touch stack ready         : $(if ($state.StackReady) {'YES'} else {'NO'})" $(if ($state.StackReady) {'Good'} else {'Bad'})
-Log "Max touch points          : $($state.MaxTouches)"
+Log "  Digitizer seen by Windows : $(if ($state.DigitizerPresent) {'YES'} else {'NO'})" $(if ($state.DigitizerPresent) {'Good'} else {'Bad'})
+Log "  Touch stack ready         : $(if ($state.StackReady) {'YES'} else {'NO'})" $(if ($state.StackReady) {'Good'} else {'Bad'})
+Log "  Max touch points          : $($state.MaxTouches)"
 
 Log ''
 Log 'Touch devices:'
@@ -294,7 +399,6 @@ if (-not $NoRestorePoint) {
 
 # =====================================================================
 #  STAGE 2 - REPAIR THE TOUCH DRIVER STACK
-#  This is the fix that worked on the reported unit.
 # =====================================================================
 if ($Mode -in 'Repair','Full') {
     Head 'STAGE 2 - REPAIR TOUCH DRIVER STACK'
@@ -716,6 +820,27 @@ if ($finalOK) {
     Log '' 'Bad'
     Log "Quote serial number: $Serial" 'Bad'
 }
+
+# --- Single-line summary for the returns tracker ----------------------
+$ip = $panels | Where-Object { $_.IsInternal } | Select-Object -First 1
+if (-not $ip) { $ip = $panels | Select-Object -First 1 }
+$verdict = if ($finalOK) { 'FIXED' } elseif ($RebootFlag) { 'PENDING_REBOOT' } else { 'HARDWARE' }
+
+Log ''
+Log 'CSV SUMMARY (paste this line into the returns tracker):'
+Log 'Date,Serial,Vendor,Model,BIOS,WinBuild,PanelVendor,PanelModel,PanelBuilt,SuspectEDID,Verdict'
+Log ("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}" -f `
+    (Get-Date -Format 'yyyy-MM-dd'),
+    $Serial,
+    $Vendor,
+    $cs.Model,
+    $BiosVer,
+    "$($os.BuildNumber).$($cv.UBR)",
+    $(if ($ip) { $ip.VendorCode } else { 'n/a' }),
+    $(if ($ip) { $ip.Model } else { 'n/a' }),
+    $(if ($ip) { "W$($ip.BuildWeek)-$($ip.BuildYear)" } else { 'n/a' }),
+    $(if ($ip -and $ip.SuspectEdid) { 'YES' } else { 'no' }),
+    $verdict)
 
 $reportFile = Join-Path $LogPath "TouchFix_Report_$stamp.txt"
 $Script:Report -join "`r`n" | Out-File $reportFile -Encoding UTF8
