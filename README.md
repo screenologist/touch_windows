@@ -32,6 +32,9 @@ This reinstalls the touchscreen driver. It takes about a minute.
 ```
     TouchFix_Report_2026-08-20_1430.txt
 ```
+
+Mode: -IncludeBios
+Use only on power supply and when battery is fully charged. This mode flashes BIOS to the newest version.
  
 ---
 
