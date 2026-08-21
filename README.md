@@ -17,13 +17,13 @@ Wait about 30 seconds. When it finishes, a report is saved to your Desktop.
 
 6. Repair (only if Step 5 said BROKEN). In the same blue window, type this and press **Enter**:
 
-recommended -> reinstall drivers, OS, firmware
+reinstall only drivers (1st Try)
 ```
      powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Repair
 ```
-or reinstall drivers, OS, firmware
+or reinstall drivers, update Windows OS (2nd try, if 1st try did not help)
 ```
-     powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Full
+     powershell -ExecutionPolicy Bypass -File .\TouchFix.ps1 -Mode Full -AutoReboot
 ```
 This reinstalls the touchscreen driver. It takes about a minute.
 
