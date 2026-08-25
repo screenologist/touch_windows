@@ -75,6 +75,10 @@ param(
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
 
+# Bump this on every change. It appears in the report and the CSV line, so a
+# report from the field can always be traced back to the build that made it.
+$ScriptVersion = '1.1'
+
 # =====================================================================
 #  ELEVATION
 # =====================================================================
@@ -148,6 +152,7 @@ Write-Host '    TOUCHSCREEN REPAIR & UPDATE AUTOMATION' -ForegroundColor Cyan
 Write-Host '  ==================================================================' -ForegroundColor Cyan
 Write-Host ''
 
+Log "TouchFix      : v$ScriptVersion"
 Log "Mode          : $Mode"
 Log "Vendor        : $Vendor ($($cs.Manufacturer))"
 Log "Model         : $($cs.Model)"
@@ -194,17 +199,37 @@ function Get-PanelInfo {
         'HKC' = 'HKC';          'PNL' = 'Generic panel'
     }
 
+    # D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY values that mean "built into the lid":
+    #   6          = LVDS
+    #   11         = embedded DisplayPort
+    #   13         = embedded UDI
+    #   2147483648 = 0x80000000, explicitly Internal
+    # On hybrid-graphics laptops (Meteor Lake and similar) the internal panel
+    # sometimes reports through the discrete adapter and returns -1 / -2, so a
+    # chassis-based fallback is applied below.
+    $internalCodes = @(6, 11, 13, 2147483648)
+
+    # Is this machine a laptop? Chassis types 8-14, 30-32 are portable form factors.
+    $isLaptop = $false
+    try {
+        $chassis = (Get-CimInstance Win32_SystemEnclosure -EA SilentlyContinue).ChassisTypes
+        $isLaptop = @($chassis | Where-Object { $_ -in 8,9,10,11,12,13,14,30,31,32 }).Count -gt 0
+    } catch { }
+
     $ids    = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -EA SilentlyContinue)
     $params = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -EA SilentlyContinue)
     $conn   = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -EA SilentlyContinue)
+
+    $records = @()
 
     foreach ($m in $ids) {
         $inst = $m.InstanceName
         $p = $params | Where-Object { $_.InstanceName -eq $inst }
         $c = $conn   | Where-Object { $_.InstanceName -eq $inst }
 
-        # VideoOutputTechnology: 11 = embedded DisplayPort, 0x80000000 = internal
-        $isInternal = $c -and ($c.VideoOutputTechnology -in 11, 2147483648)
+        $vot        = if ($c) { [int64]$c.VideoOutputTechnology } else { -99 }
+        $isInternal = $vot -in $internalCodes
+        $howKnown   = if ($isInternal) { "reported (VOT $vot)" } else { '' }
 
         $diagIn = if ($p -and $p.MaxHorizontalImageSize -gt 0) {
             [math]::Round([math]::Sqrt(
@@ -226,8 +251,10 @@ function Get-PanelInfo {
             $pcode   -match '^(0+|O+)$'
         )
 
-        [pscustomobject]@{
+        $records += [pscustomobject]@{
             IsInternal   = [bool]$isInternal
+            Detection    = $howKnown
+            VideoOutput  = $vot
             Type         = if ($isInternal) { 'INTERNAL (laptop panel)' } else { 'External monitor' }
             VendorCode   = $mfgCode
             VendorName   = if ($panelVendors.ContainsKey($mfgCode)) { $panelVendors[$mfgCode] } else { 'Unrecognised' }
@@ -242,6 +269,19 @@ function Get-PanelInfo {
             InstanceName = $inst
         }
     }
+
+    # Fallback: on a laptop where nothing was reported as internal, the smallest
+    # display is the built-in panel. Marked as inferred so nobody mistakes a
+    # guess for a reading.
+    if ($isLaptop -and $records.Count -gt 0 -and @($records | Where-Object { $_.IsInternal }).Count -eq 0) {
+        $sized = @($records | Where-Object { $_.SizeInches -gt 0 } | Sort-Object SizeInches)
+        $pick  = if ($sized.Count -gt 0) { $sized[0] } else { $records[0] }
+        $pick.IsInternal = $true
+        $pick.Type       = 'INTERNAL (laptop panel, inferred)'
+        $pick.Detection  = "inferred - adapter reported VOT $($pick.VideoOutput)"
+    }
+
+    $records
 }
 
 # =====================================================================
@@ -312,6 +352,7 @@ if ($panels.Count -eq 0) {
         Log "    Panel serial  : $($pn.PanelSerial)"
         Log "    Built         : $($pn.Built)"
         if ($pn.SizeInches -gt 0) { Log "    Size          : $($pn.SizeInches) inches" }
+        if ($pn.Detection)        { Log "    Detected via  : $($pn.Detection)" }
 
         if ($pn.SuspectEdid -and $pn.IsInternal) {
             Log ''
@@ -826,21 +867,37 @@ $ip = $panels | Where-Object { $_.IsInternal } | Select-Object -First 1
 if (-not $ip) { $ip = $panels | Select-Object -First 1 }
 $verdict = if ($finalOK) { 'FIXED' } elseif ($RebootFlag) { 'PENDING_REBOOT' } else { 'HARDWARE' }
 
+# Wrap any value that contains a comma or quote so the line stays valid CSV
+function CsvField($v) {
+    $s = "$v"
+    if ($s -eq '') { return 'n/a' }
+    if ($s -match '[",]') { return '"' + ($s -replace '"','""') + '"' }
+    return $s
+}
+
+# Touch controller part, e.g. ELAN2514 - tells you if a model is multi-sourced
+$ctrl = 'n/a'
+$td = $final.TouchDevices | Select-Object -First 1
+if ($td -and $td.InstanceId -match '(?:HID|ACPI)\\([A-Z]{3,4}[0-9A-F]{3,4})') { $ctrl = $Matches[1] }
+
 Log ''
 Log 'CSV SUMMARY (paste this line into the returns tracker):'
-Log 'Date,Serial,Vendor,Model,BIOS,WinBuild,PanelVendor,PanelModel,PanelBuilt,SuspectEDID,Verdict'
-Log ("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}" -f `
+Log 'Date,Serial,Vendor,Model,BIOS,WinBuild,Controller,PanelVendor,PanelModel,PanelBuilt,SuspectEDID,Verdict,ToolVersion'
+Log (@(
     (Get-Date -Format 'yyyy-MM-dd'),
-    $Serial,
-    $Vendor,
-    $cs.Model,
-    $BiosVer,
-    "$($os.BuildNumber).$($cv.UBR)",
-    $(if ($ip) { $ip.VendorCode } else { 'n/a' }),
-    $(if ($ip) { $ip.Model } else { 'n/a' }),
-    $(if ($ip) { "W$($ip.BuildWeek)-$($ip.BuildYear)" } else { 'n/a' }),
+    (CsvField $Serial),
+    (CsvField $Vendor),
+    (CsvField $cs.Model),
+    (CsvField $BiosVer),
+    (CsvField "$($os.BuildNumber).$($cv.UBR)"),
+    (CsvField $ctrl),
+    (CsvField $(if ($ip) { $ip.VendorCode })),
+    (CsvField $(if ($ip) { $ip.Model })),
+    (CsvField $(if ($ip) { "W$($ip.BuildWeek)-$($ip.BuildYear)" })),
     $(if ($ip -and $ip.SuspectEdid) { 'YES' } else { 'no' }),
-    $verdict)
+    $verdict,
+    "v$ScriptVersion"
+) -join ',')
 
 $reportFile = Join-Path $LogPath "TouchFix_Report_$stamp.txt"
 $Script:Report -join "`r`n" | Out-File $reportFile -Encoding UTF8
