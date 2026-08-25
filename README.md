@@ -6,7 +6,7 @@ Touchscreen repair and update automation for HP / Lenovo / Dell notebooks.
 3. Right-click **Windows PowerShell** in the results and choose **Run as administrator**. Click **Yes** when Windows asks for permission.
 4. A terminal window opens.. Type this and press **Enter**:
 ```
-    cd $env:USERPROFILE\Desktop
+    cd ([Environment]::GetFolderPath('Desktop'))
 ```
 5. Run the check (Type this and press **Enter**:)
 ```
