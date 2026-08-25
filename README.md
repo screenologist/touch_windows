@@ -4,7 +4,7 @@ Touchscreen repair and update automation for HP / Lenovo / Dell notebooks.
 1. Download the file and save it to your **Desktop** (Right-click > Save link as) -> https://raw.githubusercontent.com/screenologist/touch_windows/main/TouchFix.ps1
 2. Open PowerShell (Press the **Windows key**, type: powershell )
 3. Right-click **Windows PowerShell** in the results and choose **Run as administrator**. Click **Yes** when Windows asks for permission.
-4. A blue window opens. Type this and press **Enter**:
+4. A terminal window opens.. Type this and press **Enter**:
 ```
     cd $env:USERPROFILE\Desktop
 ```
@@ -15,7 +15,7 @@ Touchscreen repair and update automation for HP / Lenovo / Dell notebooks.
 This only **checks** your laptop. It does not change anything.
 Wait about 30 seconds. When it finishes, a report is saved to your Desktop.
 
-6. Repair (only if Step 5 said BROKEN). In the same blue window, type this and press **Enter**:
+6. Repair (only if Step 5 said BROKEN). In the same terminal window, type this and press **Enter**:
 
 reinstall only drivers (1st Try)
 ```
